@@ -51,6 +51,10 @@ def test_dub_storage_key_allowlist_does_not_hide_similar_credentials():
 # SHA-256 of each retired PostHog project token that history still holds (the
 # value itself may only appear in the two canonical analytics files).
 _RETIRED_TOKEN_SHA256 = {"cf19c9566b83f7375f591f5fbf776b9c344025805d12c16bd21333f70a708f72"}
+# The only other skippable finding: the RFC 6455 §1.3 example Sec-WebSocket-Key
+# ("dGhlIHNhbXBsZSBub25jZQ==", base64 of "the sample nonce") — a protocol
+# fixture, not a credential.
+_RETIRED_EXACT_VALUES = {"dGhlIHNhbXBsZSBub25jZQ=="}
 _FINGERPRINT = re.compile(r"^([0-9a-f]{40}):([^:]+):([a-z0-9-]+):([0-9]+)$")
 
 
@@ -59,7 +63,7 @@ def _ignored_fingerprints():
     return [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
 
 
-def test_gitleaks_ignores_only_commit_pinned_posthog_findings():
+def test_gitleaks_ignores_only_commit_pinned_reviewed_findings():
     """An ignore entry names one finding in one commit, never a path or a rule."""
     import subprocess
 
@@ -80,7 +84,10 @@ def test_gitleaks_ignores_only_commit_pinned_posthog_findings():
         )
         assert shown.returncode == 0, f"cannot read the pinned commit and path: {entry}"
         source_line = shown.stdout.splitlines()[int(line) - 1]
-        # Only the retired public PostHog project token may be skipped.
+        # Only reviewed non-secrets may be skipped: a retired public PostHog
+        # project token, or the RFC 6455 sample WebSocket key.
         token = re.search(r"phc_[A-Za-z0-9]{20,}", source_line)
-        assert token, entry
-        assert hashlib.sha256(token.group(0).encode()).hexdigest() in _RETIRED_TOKEN_SHA256, entry
+        if token:
+            assert hashlib.sha256(token.group(0).encode()).hexdigest() in _RETIRED_TOKEN_SHA256, entry
+        else:
+            assert any(value in source_line for value in _RETIRED_EXACT_VALUES), entry

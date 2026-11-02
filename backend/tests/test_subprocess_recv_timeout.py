@@ -15,6 +15,8 @@ accelerated budget; the four that stayed silent are the whole bug.
 The invariant below is what keeps a new engine from re-entering that state by
 omission, which is the part #1611 could not do by fixing one engine.
 """
+import time
+
 import pytest
 
 
@@ -242,8 +244,25 @@ async def test_outer_abandonment_terminates_owned_sidecar(tmp_path, monkeypatch,
                 work = run_on_gpu_pool_guarded(lambda: backend.generate('hang'), executor=executor, timeout=0.5)
             with pytest.raises(TimeoutError):
                 await work
-            assert backend._proc is not None
-            await asyncio.wait_for(asyncio.to_thread(backend._proc.wait, timeout=5), timeout=6)
-            assert backend._proc.poll() is not None
+            # Abandonment can land in either of two phases, and both must end
+            # with the owned sidecar terminated:
+            #   generate phase (healthy host) — the recv-watchdog kill leaves
+            #     the dead Popen handle in _proc, so it can be awaited/polled.
+            #   spawn phase (slow host) — the sidecar has not finished its
+            #     ready handshake when the guard fires: _spawn's _force_kill
+            #     kills the half-started sidecar and clears _proc so the next
+            #     request respawns. No handle remains to poll; the cleared
+            #     handle IS the post-kill state, which is the termination this
+            #     test requires.
+            deadline = time.monotonic() + 6
+            while True:
+                proc = backend._proc
+                if proc is None:
+                    break
+                if proc.poll() is not None:
+                    break
+                if time.monotonic() >= deadline:
+                    pytest.fail("owned sidecar survived abandonment")
+                await asyncio.sleep(0.02)
         finally:
             backend.shutdown()
